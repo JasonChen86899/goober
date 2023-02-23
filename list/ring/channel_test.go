@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-func TestConditionChannel(t *testing.T) {
-	condChan := NewConditionChannel(1)
+func TestRunChannel(t *testing.T) {
+	condChan := NewChannel(1)
 
 	go func() {
 		err := condChan.Put("1")
@@ -28,8 +28,8 @@ func TestConditionChannel(t *testing.T) {
 	time.Sleep(time.Hour)
 }
 
-func TestNewConditionChannel(t *testing.T) {
-	condChan := NewConditionChannel(0)
+func TestChannel(t *testing.T) {
+	condChan := NewChannel(100)
 
 	a := 100000
 	w := sync.WaitGroup{}
@@ -56,12 +56,12 @@ func TestNewConditionChannel(t *testing.T) {
 	fmt.Println("s1", time.Since(s1))
 }
 
-func TestChannel(t *testing.T) {
+func TestGoChannel(t *testing.T) {
 	a := 100000
 	w := sync.WaitGroup{}
 	w.Add(2)
 
-	ch := make(chan interface{}, 1)
+	ch := make(chan interface{}, 100)
 	s2 := time.Now()
 	go func() {
 		for i := 0; i < a; i++ {
@@ -81,4 +81,9 @@ func TestChannel(t *testing.T) {
 
 	w.Wait()
 	fmt.Println("s2", time.Since(s2))
+}
+
+func TestCompare(t *testing.T) {
+	TestChannel(t)
+	TestGoChannel(t)
 }

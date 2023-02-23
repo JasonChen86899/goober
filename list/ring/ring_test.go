@@ -2,8 +2,8 @@ package ring
 
 import "testing"
 
-func TestNewRingList(t *testing.T) {
-	rl := NewRingList(8)
+func TestNewList(t *testing.T) {
+	rl := NewRing(8)
 
 	var err error
 	var item interface{}

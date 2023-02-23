@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestLockFreeQueue(t *testing.T) {
+func TestRunLockFreeQueue(t *testing.T) {
 	putGroup := sync.WaitGroup{}
 	lfQueue := NewLockFreeQueue(8)
 	for i := 0; i < 8; i++ {
@@ -46,8 +46,6 @@ func TestNativeChannel(t *testing.T) {
 		for {
 			select {
 			case <-testChan:
-			default:
-
 			}
 		}
 	}()
@@ -58,16 +56,15 @@ func TestNativeChannel(t *testing.T) {
 		go func() {
 			select {
 			case testChan <- testBytes:
-			default:
+				chanGroup.Done()
 			}
-			chanGroup.Done()
 		}()
 	}
 	chanGroup.Wait()
 	fmt.Println("Channel: ", time.Since(startTime))
 }
 
-func TestNewLockFreeQueue(t *testing.T) {
+func TestLockFreeQueue(t *testing.T) {
 	size := uint64(1024 * 1000)
 	testLFQueue := NewLockFreeQueue(1024 * 30)
 	lfGroup := sync.WaitGroup{}
@@ -89,4 +86,9 @@ func TestNewLockFreeQueue(t *testing.T) {
 	}
 	lfGroup.Wait()
 	fmt.Println("LockFreeQueue: ", time.Since(startTime))
+}
+
+func TestLockFreeQueueComparet(t *testing.T) {
+	TestLockFreeQueue(t)
+	TestNativeChannel(t)
 }

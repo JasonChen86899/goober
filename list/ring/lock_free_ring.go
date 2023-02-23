@@ -1,17 +1,18 @@
 package ring
 
 import (
+	"goober/list"
 	"runtime"
 	"sync/atomic"
 )
 
 type LockFreeQueue struct {
-	RingList
+	Ring
 }
 
 func NewLockFreeQueue(size uint64) *LockFreeQueue {
 	return &LockFreeQueue{
-		RingList{
+		Ring{
 			size:  size,
 			items: make([]interface{}, size, size),
 			head:  0,
@@ -27,7 +28,7 @@ func (lfQueue *LockFreeQueue) Put(item interface{}) error {
 		oldValue := lfQueue.tail
 		newValue := (oldValue + 1) % lfQueue.size
 		if lfQueue.head == newValue {
-			return ErrListFull
+			return list.ErrFull
 		}
 
 		if atomic.CompareAndSwapUint64(tailPointer, oldValue, newValue) {
@@ -44,7 +45,7 @@ func (lfQueue *LockFreeQueue) Get() (interface{}, error) {
 		// cas head
 		oldValue := lfQueue.head
 		if lfQueue.tail == oldValue {
-			return nil, ErrListEmpty
+			return nil, list.ErrEmpty
 		}
 
 		newValue := (oldValue + 1) % lfQueue.size

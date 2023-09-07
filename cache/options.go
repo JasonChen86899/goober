@@ -10,18 +10,24 @@ const (
 	defaultLoadTimeOut               = 3 * time.Second
 )
 
+// Options options for cache
 type Options struct {
+	// clean options
 	cleanSize     int
 	cleanDuration time.Duration
 
+	// cache size options
 	maxSize                   int
 	cleanFullThresholdPercent float64
 
+	// default options for each kv entry
 	defaultEntryOpts EntryOptions
 }
 
+// Option ...
 type Option func(options *Options)
 
+// NewOptions new an options
 func NewOptions() Options {
 	return Options{
 		cleanSize:                 defaultCleanSize,
@@ -32,12 +38,14 @@ func NewOptions() Options {
 	}
 }
 
+// MaxSize set max size
 func MaxSize(v int) Option {
 	return func(options *Options) {
 		options.maxSize = v
 	}
 }
 
+// CleanSize set clean size
 func CleanSize(v int) Option {
 	return func(options *Options) {
 		options.cleanSize = v

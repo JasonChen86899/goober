@@ -3,7 +3,8 @@ package v2
 import (
 	"math"
 	"sync"
-	"sync/atomic"
+
+	"go.uber.org/atomic"
 )
 
 type redBlackBucket struct {
@@ -15,23 +16,25 @@ type RedBlackMap struct {
 	mu sync.RWMutex
 
 	cap   uint64
-	count uint64
+	count *atomic.Uint64
 
-	buckets    atomic.Value
-	oldBuckets atomic.Value
+	buckets    *atomic.Value
+	oldBuckets *atomic.Value
 
 	reHashIndex int64
+
+	growing *atomic.Bool
 }
 
 func NewRedBlackMap() *RedBlackMap {
 	m := &RedBlackMap{
 		cap:   uint64(math.Pow(2, initBPower)),
-		count: 0,
+		count: atomic.NewUint64(0),
 
-		oldBuckets: atomic.Value{},
-		buckets:    atomic.Value{},
+		oldBuckets: &atomic.Value{},
+		buckets:    &atomic.Value{},
 
-		reHashIndex: -1,
+		growing: atomic.NewBool(false),
 	}
 
 	bs := m.cap
@@ -64,6 +67,7 @@ func (m *RedBlackMap) Get(key string) (value interface{}, ok bool) {
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
 	value, ok = m.getFromBucket(key, keyHash)
 	if ok {
 		return
@@ -89,22 +93,32 @@ func (m *RedBlackMap) getFromOldBucket(key string, keyHash uint64) (interface{},
 }
 
 func (m *RedBlackMap) Put(key string, value interface{}) {
+	m.put(key, value)
+	m.count.Add(1)
+
+	// check if map need rehash
+	if m.checkReHashThreshold() {
+		go m.reHashing()
+	}
+}
+
+func (m *RedBlackMap) put(key string, value interface{}) {
 	keyHash := strHash(key)
 	curBucket := m.buckets.Load().(redBlackBucket)
 	i := keyHash % uint64(len(curBucket.b))
 	b := curBucket.b[i]
 	b.put(key, value)
-
-	go func() {
-		// check rehashing or need rehash
-		if curBucket.reHashing || m.checkReHashThreshold() {
-			m.reHashing()
-		}
-	}()
 }
 
 func (m *RedBlackMap) checkReHashThreshold() bool {
-	ratio := float64(atomic.LoadUint64(&m.count)) / float64(m.cap)
+	rbBucket := m.buckets.Load().(redBlackBucket)
+	if rbBucket.reHashing {
+		return true
+	}
+	m.mu.RLock()
+	ratio := float64(m.count.Load()) / float64(m.cap)
+	m.mu.RUnlock()
+
 	if ratio >= reHashThreshold {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -114,8 +128,7 @@ func (m *RedBlackMap) checkReHashThreshold() bool {
 			return true
 		}
 
-		m.cap = m.cap * 2
-		m.oldBuckets = m.buckets
+		m.cap = m.cap << 1 // cap * 2
 		bs := m.cap
 		buckets := make([]*redBlackTree, bs)
 		for i := uint64(0); i < bs; i++ {
@@ -135,6 +148,11 @@ func (m *RedBlackMap) checkReHashThreshold() bool {
 }
 
 func (m *RedBlackMap) reHashing() {
+	if !m.growing.CAS(false, true) {
+		return
+	}
+	defer m.growing.Store(false)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -142,18 +160,17 @@ func (m *RedBlackMap) reHashing() {
 	curBucket := m.buckets.Load().(redBlackBucket)
 	oldBucket := m.oldBuckets.Load().(redBlackBucket)
 
-	if reHashIndex < 0 || !curBucket.reHashing || reHashIndex > int64(len(oldBucket.b)-1) {
+	if !curBucket.reHashing {
 		return
 	}
 
 	oldBucket.b[reHashIndex].rangeTree(func(key, value interface{}) {
-		curKeyHash := strHash(key.(string))
-		curBucket.b[curKeyHash].put(key, value)
+		m.put(key.(string), value)
 	})
 
 	// rehash end
 	if reHashIndex == int64(len(oldBucket.b)-1) {
-		oldBucket.b, oldBucket.reHashing = nil, false
+		oldBucket.b = nil
 		curBucket.reHashing = false
 		m.reHashIndex = 0
 	} else {

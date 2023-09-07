@@ -13,10 +13,10 @@ import (
 func TestNewCacheLoader(t *testing.T) {
 	cache := NewLRUCache()
 
-	f := func(key string) (interface{}, error) {
+	f := func(key string) *Value {
 		t.Log("loader")
 		time.Sleep(time.Second * 2)
-		return "test", nil
+		return &Value{Val: "test"}
 	}
 	s := "1"
 	wg := sync.WaitGroup{}
@@ -27,9 +27,9 @@ func TestNewCacheLoader(t *testing.T) {
 				WithLoader(f),
 				ExpirationOption(time.Minute),
 			}
-			rsp, err, _ := cache.Load(s, eOpts...)
+			rsp, _ := cache.Load(s, eOpts...)
 			//assert.Error(t, err)
-			t.Log(i, rsp, err)
+			t.Log(i, rsp)
 			wg.Done()
 		}(t, i)
 	}
@@ -49,10 +49,12 @@ func TestCacheClean(t *testing.T) {
 			j := i
 			go func(j int) {
 				startTime := time.Now()
-				f := func(string) (ii interface{}, err error) {
-					return fmt.Sprintf("value_%d", j), nil
+				f := func(string) *Value {
+					return &Value{
+						Val: fmt.Sprintf("value_%d", j),
+					}
 				}
-				_, _, _ = cache.Load(fmt.Sprintf("%s_%d", key, j), WithLoader(f), ExpirationOption(time.Hour))
+				_, _ = cache.Load(fmt.Sprintf("%s_%d", key, j), WithLoader(f), ExpirationOption(time.Hour))
 				if time.Since(startTime).Seconds() > 3 {
 					atomic.AddInt32(&count, 1)
 				}
@@ -71,10 +73,10 @@ func TestCacheClean(t *testing.T) {
 
 func TestOldCacheLoader(t *testing.T) {
 	cache := NewLRUCache(CleanDuration(2*time.Minute), MaxSize(10240))
-	f := func(string2 string) (interface{}, error) {
+	f := func(string2 string) *Value {
 		time.Sleep(1 * time.Millisecond)
 		t.Logf("test called at :%d", time.Now().UnixNano()/1000)
-		return "1", nil
+		return &Value{Val: "1"}
 	}
 	w := sync.WaitGroup{}
 	roundNum := 2
@@ -83,14 +85,14 @@ func TestOldCacheLoader(t *testing.T) {
 	start := time.Now().UnixNano()
 	for j := 0; j <= roundNum; j++ {
 		key := strconv.Itoa(j % 3)
-		_, _, _ = cache.Load(key, WithLoader(f), ExpirationOption(2*time.Minute))
+		_, _ = cache.Load(key, WithLoader(f), ExpirationOption(2*time.Minute))
 	}
 	t.Logf("test start at :%d", start/1000)
 	for i := 0; i < gNum; i++ {
 		go func(i int) {
 			for j := 0; j <= roundNum; j++ {
 				key := strconv.Itoa(j % 3)
-				_, _, _ = cache.Load(key, WithLoader(f), ExpirationOption(1*time.Minute))
+				_, _ = cache.Load(key, WithLoader(f), ExpirationOption(1*time.Minute))
 			}
 			w.Done()
 		}(i)

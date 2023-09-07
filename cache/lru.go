@@ -56,7 +56,7 @@ func (cache *LRUCache) lruMoveToFront(e *list.Element) {
 	cache.lruList.MoveToFront(e)
 }
 
-func (cache *LRUCache) lruInsert(cacheEntry *Entry) *list.Element {
+func (cache *LRUCache) lruInsert(cacheEntry *internalEntry) *list.Element {
 	return cache.lruList.PushFront(cacheEntry)
 }
 
@@ -85,7 +85,7 @@ func (cache *LRUCache) asyncClean() {
 
 func (cache *LRUCache) deleteItem(e *list.Element) {
 	cache.lruList.Remove(e)
-	delete(cache.values, e.Value.(*Entry).key)
+	delete(cache.values, e.Value.(*internalEntry).key)
 }
 
 func (cache *LRUCache) cleanExpired() {
@@ -97,7 +97,7 @@ func (cache *LRUCache) cleanExpired() {
 	back := cache.lruList.Back()
 	for i := 0; i < cache.opts.cleanSize && back != nil; i++ {
 		tmp := back.Value
-		if tmp.(*Entry).expiration <= time.Now().UnixNano() {
+		if tmp.(*internalEntry).expiration <= time.Now().UnixNano() {
 			cache.deleteItem(back)
 		}
 		back = back.Prev()
@@ -108,26 +108,24 @@ func (cache *LRUCache) cleanFull() {
 	for i := 0; i < cache.opts.cleanSize && cache.lruList.Len() > 0; i++ {
 		e := cache.lruList.Back()
 		cache.lruList.Remove(e)
-		delete(cache.values, e.Value.(*Entry).key)
+		delete(cache.values, e.Value.(*internalEntry).key)
 	}
 }
 
-func (cache *LRUCache) callLoader(key string, eOpts EntryOptions) (*Entry, error) {
+func (cache *LRUCache) callLoader(key string, eOpts EntryOptions) *internalEntry {
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), eOpts.loadTimeout)
 	defer loadCancel()
 
-	retChan := make(chan FRet)
+	retChan := make(chan *Value)
 	go func() {
-		res, err := eOpts.loader(key)
-		retChan <- FRet{
-			Res: res,
-			Err: err,
-		}
+		ret := eOpts.loader(key)
+		retChan <- ret
 	}()
 
-	ret := FRet{}
+	var ret *Value
 	select {
 	case <-loadCtx.Done():
+		ret = &Value{}
 		ret.Err = fmt.Errorf(
 			"function: %s, %w",
 			runtime.FuncForPC(reflect.ValueOf(eOpts.loader).Pointer()).Name(),
@@ -136,33 +134,32 @@ func (cache *LRUCache) callLoader(key string, eOpts EntryOptions) (*Entry, error
 		// block until loader function return within loadTimeout
 	}
 
-	cacheEntry := &Entry{
+	cacheEntry := &internalEntry{
 		key:       key,
-		Refreshed: atomic.NewBool(false),
+		refreshed: atomic.NewBool(false),
 	}
 
 	if ret.Err != nil {
 		// do this to protect f() when f() return err in high concurrent query
 		cacheEntry.expiration = time.Now().Add(500 * time.Millisecond).UnixNano()
-		cacheEntry.value = ret.Err
 	} else {
 		cacheEntry.expiration = time.Now().Add(eOpts.expireAfterWrite).UnixNano()
-		cacheEntry.value = ret.Res
 	}
+	cacheEntry.innerValue = ret
 
-	return cacheEntry, ret.Err
+	return cacheEntry
 }
 
 func (cache *LRUCache) asyncRefreshItem(cacheKey string, eOpts EntryOptions) {
 	// call loader
-	item, _ := cache.callLoader(cacheKey, eOpts)
+	item := cache.callLoader(cacheKey, eOpts)
 
 	cache.lock.Lock()
 	defer cache.lock.Unlock()
 
 	v, ok := cache.values[cacheKey]
 	// the key may be cleaned by the asyncClean goroutine.
-	// if cleaned, should be insert to cache again, otherwise just re-assign.
+	// if cleaned, should be inserted to cache again, otherwise just re-assign.
 	if ok {
 		v.Value = item
 		cache.lruMoveToFront(v)
@@ -172,49 +169,35 @@ func (cache *LRUCache) asyncRefreshItem(cacheKey string, eOpts EntryOptions) {
 	}
 }
 
-func (cache *LRUCache) Load(cacheKey string, opts ...EntryOption) (interface{}, error, bool) {
+func (cache *LRUCache) Load(cacheKey string, opts ...EntryOption) (*Value, bool) {
 	eOpts := cache.opts.defaultEntryOpts
 	for _, o := range opts {
 		o(&eOpts)
 	}
 
-	// loader function is nil, then return Get(key) value
+	// loader function is nil, then return Get(key) innerValue
 	if eOpts.loader == nil {
-		v, err, ok := cache.Get(cacheKey)
-		if !ok {
-			return nil, nil, false
-		}
-
-		if err != nil {
-			return nil, err, true
-		}
-		return v, nil, true
+		return cache.Get(cacheKey)
 	}
 
 	cache.lock.RLock()
 	e, ok := cache.values[cacheKey]
 	// check cache hist or not, and if cache hist and expired, async refresh this CacheEntry
 	if ok {
-		entry := e.Value.(*Entry)
-
+		entry := e.Value.(*internalEntry)
 		expired := entry.expiration <= time.Now().UnixNano()
-		// not expired or async load just return value in cache
+		// not expired or async load just return innerValue in cache
 		if !expired || !eOpts.syncLoad {
 			defer cache.lock.RUnlock()
 
 			// expired and async load need async refresh
 			if expired && !eOpts.syncLoad {
-				if entry.Refreshed.CAS(false, true) {
+				if entry.refreshed.CAS(false, true) {
 					go cache.asyncRefreshItem(cacheKey, eOpts)
 				}
 			}
 
-			// check err
-			if err, ok := entry.value.(error); ok {
-				return nil, err, true
-			}
-
-			return e.Value.(*Entry).value, nil, true
+			return entry.innerValue, true
 		}
 	}
 	cache.lock.RUnlock()
@@ -223,11 +206,7 @@ func (cache *LRUCache) Load(cacheKey string, opts ...EntryOption) (interface{}, 
 	defer cache.lock.Unlock()
 	e, ok = cache.values[cacheKey]
 	if ok {
-		if err, ok := e.Value.(*Entry).value.(error); ok {
-			return nil, err, true
-		}
-
-		return e.Value.(*Entry).value, nil, true
+		return e.Value.(*internalEntry).innerValue, true
 	}
 
 	// check cache if full
@@ -246,45 +225,36 @@ func (cache *LRUCache) Load(cacheKey string, opts ...EntryOption) (interface{}, 
 	}
 
 	// call loader
-	cacheEntry, err := cache.callLoader(cacheKey, eOpts)
+	cacheEntry := cache.callLoader(cacheKey, eOpts)
 	e = cache.lruInsert(cacheEntry)
 	cache.values[cacheKey] = e
 
-	if err != nil {
-		return nil, err, true
-	}
-
-	return cacheEntry.value, nil, true
+	return cacheEntry.innerValue, false
 }
 
 func (cache *LRUCache) Delete(cacheKey string) {
 	cache.lock.Lock()
 	defer cache.lock.Unlock()
 
-	// check cache value exist
+	// check cache innerValue exist
 	if v, ok := cache.values[cacheKey]; ok {
 		cache.lruList.Remove(v)
 		delete(cache.values, cacheKey)
 	}
 }
 
-func (cache *LRUCache) Get(key string) (interface{}, error, bool) {
+func (cache *LRUCache) Get(key string) (*Value, bool) {
 	cache.lock.RLock()
 	defer cache.lock.RUnlock()
 
 	// check err
 	e, ok := cache.values[key]
 	if ok {
-		entry := e.Value.(*Entry)
-		if err, ok := entry.value.(error); ok {
-			return nil, err, true
-		}
-
-		return entry.value, nil, true
+		entry := e.Value.(*internalEntry)
+		return entry.innerValue, true
 	}
 
-	return nil, nil, false
-
+	return nil, false
 }
 
 func (cache *LRUCache) Put(key string, value interface{}, opts ...EntryOption) interface{} {
@@ -297,11 +267,11 @@ func (cache *LRUCache) Put(key string, value interface{}, opts ...EntryOption) i
 	defer cache.lock.Unlock()
 
 	e, ok := cache.values[key]
-	cacheEntry := &Entry{
+	cacheEntry := &internalEntry{
 		key:        key,
-		value:      value,
+		innerValue: &Value{Val: value},
 		expiration: time.Now().Add(eOpts.expireAfterWrite).UnixNano(),
-		Refreshed:  atomic.NewBool(false),
+		refreshed:  atomic.NewBool(false),
 	}
 
 	if ok {
@@ -309,13 +279,13 @@ func (cache *LRUCache) Put(key string, value interface{}, opts ...EntryOption) i
 		e.Value = cacheEntry
 		cache.lruMoveToFront(e)
 
-		return pre.(*Entry).value
+		return pre.(*internalEntry).innerValue
 	}
 
 	e = cache.lruInsert(cacheEntry)
 	cache.values[key] = e
 
-	return cacheEntry.value
+	return cacheEntry.innerValue
 }
 
 func (cache *LRUCache) Size() int {
@@ -338,7 +308,7 @@ func (cache *LRUCache) CompareAndSwap(key string, old, new interface{}, opts ...
 	if !ok {
 		pre = nil
 	} else {
-		pre = e.Value.(*Entry).value
+		pre = e.Value.(*internalEntry).innerValue
 	}
 
 	// not equal
@@ -357,7 +327,7 @@ func (cache *LRUCache) CompareAndSwap(key string, old, new interface{}, opts ...
 	if !ok {
 		pre = nil
 	} else {
-		pre = e.Value.(*Entry).value
+		pre = e.Value.(*internalEntry).innerValue
 	}
 
 	// not equal, change by other goroutine
@@ -365,11 +335,11 @@ func (cache *LRUCache) CompareAndSwap(key string, old, new interface{}, opts ...
 		return pre, false
 	}
 
-	cacheEntry := &Entry{
+	cacheEntry := &internalEntry{
 		key:        key,
-		value:      new,
+		innerValue: &Value{Val: new},
 		expiration: time.Now().Add(eOpts.expireAfterWrite).UnixNano(),
-		Refreshed:  atomic.NewBool(false),
+		refreshed:  atomic.NewBool(false),
 	}
 
 	// check if exist

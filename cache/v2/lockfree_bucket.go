@@ -71,17 +71,24 @@ func (b *bucket) Put(key, value interface{}) {
 
 	// cas b.tail
 	for !atomic.CompareAndSwapPointer(tailAddr, tmpPre, unsafe.Pointer(tmpNewTail)) {
-		tmpPre = b.tail
-		tmpNewTail = newNode(key, value)
+		tmpPre = atomic.LoadPointer(tailAddr)
 	}
 
-	if atomic.LoadPointer(&b.head) == nil {
-		if atomic.CompareAndSwapPointer(headAddr, nil, unsafe.Pointer(tmpNewTail)) {
-			return
-		}
+	// has no head
+	if tmpPre == nil {
+		atomic.StorePointer(headAddr, unsafe.Pointer(tmpNewTail))
+		return
 	}
 
 	// set pre.next
 	(*node)(tmpPre).next = tmpNewTail
 	return
+}
+
+func (b *bucket) forRange(f func(key, value interface{})) {
+	n := (*node)(atomic.LoadPointer(&b.head))
+	for n != nil {
+		f(n.key, n.value)
+		n = n.next
+	}
 }

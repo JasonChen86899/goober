@@ -10,6 +10,8 @@ It provides a set of data structure to help developer code better.
 | Cache          | Safe             |
 | LRUCache       | Safe             |
 | SynMap         | Safe             |
+| v2/RedBlackMap | Safe             |
+| v2/LockFreeMap | Safe             |
 | Ring           | UnSafe           |
 | LockFreeRing   | Safe             |
 | Channel        | Safe             |

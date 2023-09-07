@@ -87,3 +87,67 @@ func TestCompare(t *testing.T) {
 	TestChannel(t)
 	TestGoChannel(t)
 }
+
+func TestChannel2(t *testing.T) {
+	condChan := NewChannel(100)
+
+	a := 100000
+	w := sync.WaitGroup{}
+	w.Add(a * 2)
+
+	s1 := time.Now()
+	go func() {
+		for i := 0; i < a; i++ {
+			go func() {
+				condChan.Put(1)
+				w.Done()
+			}()
+		}
+	}()
+
+	go func() {
+		for i := 0; i < a; i++ {
+			go func() {
+				condChan.Get()
+				w.Done()
+			}()
+		}
+	}()
+
+	w.Wait()
+	fmt.Println("s1", time.Since(s1))
+}
+
+func TestGoChannel2(t *testing.T) {
+	a := 100000
+	w := sync.WaitGroup{}
+	w.Add(a * 2)
+
+	ch := make(chan interface{}, 100)
+	s2 := time.Now()
+	go func() {
+		for i := 0; i < a; i++ {
+			go func() {
+				ch <- 1
+				w.Done()
+			}()
+		}
+	}()
+
+	go func() {
+		for i := 0; i < a; i++ {
+			go func() {
+				_ = <-ch
+				w.Done()
+			}()
+		}
+	}()
+
+	w.Wait()
+	fmt.Println("s2", time.Since(s2))
+}
+
+func TestCompare2(t *testing.T) {
+	TestChannel2(t)
+	TestGoChannel2(t)
+}

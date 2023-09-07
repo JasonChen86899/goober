@@ -52,7 +52,7 @@ func BenchmarkLRUMap_PutOrGet(B *testing.B) {
 				continue
 			}
 
-			_, _, _ = m.Get(j)
+			_, _ = m.Get(j)
 		}
 	})
 }

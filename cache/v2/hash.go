@@ -26,3 +26,8 @@ func strHash(key string) uint64 {
 
 	return xxhash.Sum64String(key)
 }
+
+const (
+	reHashThreshold = 0.75
+	initBPower      = 3
+)

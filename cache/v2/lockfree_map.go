@@ -2,33 +2,35 @@ package v2
 
 import (
 	"go.uber.org/atomic"
-)
-
-const (
-	reHashThreshold = 0.75
-	initBPower      = 3
+	"math"
+	"sync"
 )
 
 type Map struct {
+	cap   *atomic.Uint64
 	count *atomic.Uint64
 
 	buckets    []*bucket
 	oldBuckets []*bucket
 
-	bPower uint64
-
+	growing      *atomic.Bool
 	growingIndex *atomic.Int64
+
+	sync.RWMutex
 }
 
-func NewMap() *Map {
+func NewLockFreeMap() *Map {
 	m := &Map{
+		cap:   atomic.NewUint64(uint64(math.Pow(2, initBPower))),
 		count: atomic.NewUint64(0),
 
 		buckets: nil,
-		bPower:  initBPower,
+
+		growing:      atomic.NewBool(false),
+		growingIndex: atomic.NewInt64(-1),
 	}
 
-	bs := 2 ^ m.bPower
+	bs := m.cap.Load()
 	m.buckets = make([]*bucket, bs)
 	for i := uint64(0); i < bs; i++ {
 		m.buckets[i] = newBucket()
@@ -38,23 +40,107 @@ func NewMap() *Map {
 }
 
 func (m *Map) Get(key string) (interface{}, bool) {
+	m.RLock()
+	defer m.RUnlock()
+
+	oldBs := m.oldBuckets
+	newBs := m.buckets
+
+	v, ok := m.getFormBuckets(key, oldBs)
+	if ok {
+		return v, ok
+	}
+
+	return m.getFormBuckets(key, newBs)
+}
+
+func (m *Map) getFormBuckets(key string, buckets []*bucket) (interface{}, bool) {
+	if len(buckets) == 0 {
+		return nil, false
+	}
 	keyHash := strHash(key)
-	i := keyHash % uint64(len(m.buckets))
-	b := m.buckets[i]
+	i := keyHash % uint64(len(buckets))
+	b := buckets[i]
 
 	return b.Get(key)
 }
 
 func (m *Map) Put(key string, value interface{}) {
+	m.put(key, value)
+	m.count.Inc()
+	if m.checkReHashThreshold() {
+		go m.doGrowWork()
+	}
+}
+
+func (m *Map) put(key string, value interface{}) {
+	m.RLock()
+	defer m.RUnlock()
+
 	keyHash := strHash(key)
 	i := keyHash % uint64(len(m.buckets))
 	b := m.buckets[i]
 
 	b.Put(key, value)
-	m.count.Inc()
+}
+
+func (m *Map) checkReHashThreshold() bool {
+	if m.growingIndex.Load() >= 0 {
+		return true
+	}
+
+	m.Lock()
+	defer m.Unlock()
+	if m.growingIndex.Load() >= 0 {
+		return true
+	}
+
+	cnt := m.count.Load()
+	cp := m.cap.Load()
+	ratio := float64(cnt) / float64(cp)
+	if ratio >= reHashThreshold {
+		cp = cp << 1
+		//fmt.Println("cap:", cp<<1, "|", cp, cnt, ratio)
+		m.cap.Store(cp)
+		buckets := make([]*bucket, cp)
+		for i := range buckets {
+			buckets[i] = newBucket()
+		}
+
+		m.oldBuckets = m.buckets
+		m.buckets = buckets
+		m.growingIndex.Store(0)
+
+		return true
+	}
+	return false
 }
 
 func (m *Map) doGrowWork() {
-	//moveBucket := m.oldBuckets[m.growingIndex.Load()]
+	if !m.growing.CAS(false, true) {
+		return
+	}
+	defer m.growing.Store(false)
 
+	reHashIndex := m.growingIndex.Load()
+	if reHashIndex < 0 {
+		return
+	}
+	// rehash end
+	if reHashIndex == int64(len(m.oldBuckets)) {
+		m.oldBuckets = nil
+		// fmt.Println("reHashIndex: +++++++++++", reHashIndex)
+		m.growingIndex.Store(-1)
+		return
+	}
+
+	// fmt.Println("reHashIndex: -----------", reHashIndex)
+	m.oldBuckets[reHashIndex].forRange(func(key, value interface{}) {
+		keyHash := strHash(key.(string))
+		i := keyHash % uint64(len(m.buckets))
+		b := m.buckets[i]
+
+		b.Put(key, value)
+	})
+	m.growingIndex.Inc()
 }

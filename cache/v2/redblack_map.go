@@ -93,7 +93,10 @@ func (m *RedBlackMap) getFromOldBucket(key string, keyHash uint64) (interface{},
 }
 
 func (m *RedBlackMap) Put(key string, value interface{}) {
+	m.mu.RLock()
 	m.put(key, value)
+	m.mu.RUnlock()
+
 	m.count.Add(1)
 
 	// check if map need rehash
@@ -165,7 +168,12 @@ func (m *RedBlackMap) reHashing() {
 	}
 
 	oldBucket.b[reHashIndex].rangeTree(func(key, value interface{}) {
-		m.put(key.(string), value)
+		keyHash := strHash(key.(string))
+		i := keyHash % uint64(len(curBucket.b))
+		b := curBucket.b[i]
+		if _, ok := b.get(key); !ok {
+			m.put(key.(string), value)
+		}
 	})
 
 	// rehash end
